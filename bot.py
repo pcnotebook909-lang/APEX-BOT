@@ -14,11 +14,11 @@ bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 # ════════════════════════════════════════════════
 #  ⚙️  BURAYA KENDİ ID'LERİNİ YAZ
 # ════════════════════════════════════════════════
-LOG_KANAL_ID      = 1479829702821548243   # Log kanalı ID
+LOG_KANAL_ID      = 1479829702821548243
 
-KAYIT_YETKI_ROL   = "Kayıt Yetkilisi"    # Kayıt yetkisi olan rolün adı
-KAYITLI_ROL       = "Kayıtlı"            # Kayıt sonrası verilecek rol
-KAYITSIZ_ROL      = "Kayıtsız"           # Kayıtsız komutuyla verilecek rol
+KAYIT_YETKI_ROL   = "Kayıt Yetkilisi"
+KAYITLI_ROL       = "Kayıtlı"
+KAYITSIZ_ROL      = "Kayıtsız"
 
 ROL_UYE           = "Üye"
 ROL_FUTBOLCU      = "Futbolcu"
@@ -59,7 +59,7 @@ def deger_isle(isim, miktar_str, islem):
 def antrenman_deger_ekle(isim, eklenecek: float):
     parcalar = [p.strip() for p in isim.split("|")]
     if len(parcalar) < 2:
-        return None, "İsim formatı hatalı! Format: `Ad | 1M | ...`", None
+        return None, "İsim formatı hatalı!", None
     mevcut_str = parcalar[1].strip()
     eslesme = re.match(r"^(\d+(?:\.\d+)?)M$", mevcut_str, re.IGNORECASE)
     if not eslesme:
@@ -324,9 +324,7 @@ async def kayit(ctx, uye: discord.Member, *, bilgi: str):
     if not kayit_yetkisi_var_mi(ctx.author):
         return await ctx.send(embed=hata_embed("Bu komutu kullanmak için **Kayıt Yetkilisi** rolüne sahip olmalısın!"))
 
-    # Yazılan her şey olduğu gibi nick olur — örn: "L.Messi | 1M | | SNT"
     yeni_nick = bilgi.strip()
-
     if not yeni_nick:
         return await ctx.send(embed=hata_embed("Kullanım: `.k @üye L.Messi | 1M | | SNT`"))
 
@@ -339,12 +337,7 @@ async def kayit(ctx, uye: discord.Member, *, bilgi: str):
         color=0x5865F2
     )
     embed.set_footer(text="Aşağıdaki butonlardan birini seçin")
-
-    view = KayitSecimView(
-        hedef=uye,
-        yeni_nick=yeni_nick,
-        yapan=ctx.author
-    )
+    view = KayitSecimView(hedef=uye, yeni_nick=yeni_nick, yapan=ctx.author)
     await ctx.send(embed=embed, view=view)
 
 
@@ -360,8 +353,7 @@ class KayitSecimView(discord.ui.View):
         if interaction.user.id != self.yapan.id:
             await interaction.response.send_message(
                 embed=hata_embed("Bu butonları yalnızca komutu kullanan kişi kullanabilir!"),
-                ephemeral=True
-            )
+                ephemeral=True)
             return False
         return True
 
@@ -376,55 +368,57 @@ class KayitSecimView(discord.ui.View):
         hedef     = self.hedef
         yeni_nick = self.yeni_nick
 
-        # Rolleri bul
-        secilen_rol = discord.utils.get(guild.roles, name=rol_adi)
-        kayitli_rol = discord.utils.get(guild.roles, name=KAYITLI_ROL)
+        secilen_rol  = discord.utils.get(guild.roles, name=rol_adi)
+        kayitli_rol  = discord.utils.get(guild.roles, name=KAYITLI_ROL)
+        kayitsiz_rol = discord.utils.get(guild.roles, name=KAYITSIZ_ROL)
 
-        eksik_roller = []
-        if not secilen_rol:
-            eksik_roller.append(rol_adi)
-        if not kayitli_rol:
-            eksik_roller.append(KAYITLI_ROL)
-
-        if eksik_roller:
+        eksik = []
+        if not secilen_rol: eksik.append(rol_adi)
+        if not kayitli_rol: eksik.append(KAYITLI_ROL)
+        if eksik:
             await interaction.response.edit_message(
-                embed=hata_embed(f"Sunucuda şu roller bulunamadı: `{'`, `'.join(eksik_roller)}`\nLütfen rolleri oluştur."),
-                view=None
-            )
+                embed=hata_embed(f"Sunucuda bu roller bulunamadı: {', '.join(eksik)}\nLütfen rolleri oluştur."),
+                view=None)
             return
 
-        # Nick değiştir
+        # 1. Kayıtsız rolünü sil
+        if kayitsiz_rol and kayitsiz_rol in hedef.roles:
+            try:
+                await hedef.remove_roles(kayitsiz_rol, reason=f"Kayıt: {interaction.user}")
+            except Exception:
+                pass
+
+        # 2. Kayıtlı + seçilen rolü ver
+        try:
+            await hedef.add_roles(secilen_rol, kayitli_rol, reason=f"Kayıt: {interaction.user}")
+        except Exception as e:
+            await interaction.response.edit_message(
+                embed=hata_embed(f"Rol verilemedi: {e}"), view=None)
+            return
+
+        # 3. Nicki değiştir
         nick_hata = None
         try:
             await hedef.edit(nick=yeni_nick)
         except discord.Forbidden:
-            nick_hata = "⚠️ Nick değiştirilemedi: Bot bu üye üzerinde yetkisiz (rol sırası kontrolü)."
+            nick_hata = "⚠️ Nick değiştirilemedi: Bot bu üyeyi düzenleyemiyor.\nDiscord'da botun rolünü üyenin rolünden yukarı taşı."
         except discord.HTTPException as e:
             nick_hata = f"⚠️ Nick değiştirilemedi: {e}"
 
-        # Rolleri ver
-        await hedef.add_roles(secilen_rol, kayitli_rol, reason=f"Kayıt: {interaction.user}")
-
-        # Kayıt sayacını güncelle
+        # 4. Sayacı güncelle
         kayit_sayaci[interaction.user.id] = kayit_sayaci.get(interaction.user.id, 0) + 1
 
-        # Sonuç embed
-        sonuc_embed = discord.Embed(
-            title="✅ Kayıt Tamamlandı",
-            color=0x2ECC71 if not nick_hata else 0xFFA500,
-            timestamp=datetime.datetime.utcnow()
-        )
-        sonuc_embed.add_field(name="👤 Üye",        value=hedef.mention,    inline=True)
-        sonuc_embed.add_field(name="📝 Nick",        value=f"`{yeni_nick}`", inline=True)
-        sonuc_embed.add_field(name="🎭 Verilen Rol", value=f"`{rol_adi}` + `{KAYITLI_ROL}`", inline=False)
+        # 5. Sonuç embed
+        renk = 0x2ECC71 if not nick_hata else 0xFFA500
+        sonuc = discord.Embed(title="✅ Kayıt Tamamlandı", color=renk,
+                              timestamp=datetime.datetime.utcnow())
+        sonuc.add_field(name="👤 Üye",        value=hedef.mention,    inline=True)
+        sonuc.add_field(name="📝 Nick",        value=f"`{yeni_nick}`", inline=True)
+        sonuc.add_field(name="🎭 Verilen Rol", value=f"`{rol_adi}` + `{KAYITLI_ROL}`", inline=False)
         if nick_hata:
-            sonuc_embed.add_field(name="❗ Uyarı", value=nick_hata, inline=False)
-        sonuc_embed.set_footer(text=f"Kaydeden: {interaction.user.display_name}")
-
-        await interaction.response.edit_message(embed=sonuc_embed, view=None)
-
-        for item in self.children:
-            item.disabled = True
+            sonuc.add_field(name="❗ Uyarı", value=nick_hata, inline=False)
+        sonuc.set_footer(text=f"Kaydeden: {interaction.user.display_name}")
+        await interaction.response.edit_message(embed=sonuc, view=None)
 
     @discord.ui.button(label="Üye", style=discord.ButtonStyle.primary, emoji="👤")
     async def uye_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -452,31 +446,28 @@ async def kayitsiz(ctx, uye: discord.Member):
         return await ctx.send(embed=hata_embed("Bu komutu kullanmak için **Kayıt Yetkilisi** rolüne sahip olmalısın!"))
 
     guild = ctx.guild
-
     kayitsiz_rol = discord.utils.get(guild.roles, name=KAYITSIZ_ROL)
     if not kayitsiz_rol:
         return await ctx.send(embed=hata_embed(f"`{KAYITSIZ_ROL}` rolü sunucuda bulunamadı!"))
 
     alinacak_roller = [
         r for r in uye.roles
-        if r != guild.default_role and not r.managed
-        and r < guild.me.top_role
+        if r != guild.default_role and not r.managed and r < guild.me.top_role
     ]
-
     if alinacak_roller:
         await uye.remove_roles(*alinacak_roller, reason=f"Kayıtsız: {ctx.author}")
 
     await uye.add_roles(kayitsiz_rol, reason=f"Kayıtsız komutu: {ctx.author}")
 
     try:
-        await uye.edit(nick=uye.name, reason="Kayıtsız komutu - nick sıfırlandı")
+        await uye.edit(nick=uye.name, reason="Kayıtsız - nick sıfırlandı")
     except (discord.Forbidden, discord.HTTPException):
         pass
 
     embed = discord.Embed(
         title="🚫 Kayıtsız",
         description=(
-            f"{uye.mention} kullanıcısı kayıtsıza alındı.\n"
+            f"{uye.mention} kayıtsıza alındı.\n"
             f"🗑️ **{len(alinacak_roller)}** rol silindi.\n"
             f"🏷️ `{KAYITSIZ_ROL}` rolü verildi.\n"
             f"📝 Nick kullanıcı adına sıfırlandı."
@@ -498,26 +489,18 @@ async def kayit_say(ctx):
 
     if not kayit_sayaci:
         return await ctx.send(embed=discord.Embed(
-            description="📋 Henüz hiç kayıt yapılmamış.",
-            color=0xFFA500
-        ))
+            description="📋 Henüz hiç kayıt yapılmamış.", color=0xFFA500))
 
     siralama = sorted(kayit_sayaci.items(), key=lambda x: x[1], reverse=True)
-
-    embed = discord.Embed(
-        title="📊 Kayıt İstatistikleri",
-        color=0x5865F2,
-        timestamp=datetime.datetime.utcnow()
-    )
-
-    sirali_metin = ""
-    for sira, (uye_id, sayi) in enumerate(siralama, 1):
-        uye = ctx.guild.get_member(uye_id)
-        isim = uye.display_name if uye else f"Bilinmeyen ({uye_id})"
+    embed = discord.Embed(title="📊 Kayıt İstatistikleri", color=0x5865F2,
+                          timestamp=datetime.datetime.utcnow())
+    metin = ""
+    for sira, (uid, sayi) in enumerate(siralama, 1):
+        uye = ctx.guild.get_member(uid)
+        isim = uye.display_name if uye else f"Bilinmeyen ({uid})"
         madalya = "🥇" if sira == 1 else "🥈" if sira == 2 else "🥉" if sira == 3 else f"**{sira}.**"
-        sirali_metin += f"{madalya} {isim} — `{sayi}` kayıt\n"
-
-    embed.description = sirali_metin or "Kayıt bulunamadı."
+        metin += f"{madalya} {isim} — `{sayi}` kayıt\n"
+    embed.description = metin or "Kayıt bulunamadı."
     embed.set_footer(text=f"Toplam kayıt yapan: {len(siralama)} kişi")
     await ctx.send(embed=embed)
 
@@ -543,28 +526,23 @@ async def antrenman(ctx):
     if mevcut > 10:
         mevcut = 1
     antrenman_sayac[uye.id] = mevcut
-
     dolu = "🟩" * mevcut
     bos  = "⬜" * (10 - mevcut)
-
     embed = discord.Embed(
         title="🏋️ Antrenman",
         description=f"{uye.mention} antrenman yapıyor!\n\n**{mevcut}/10**\n{dolu}{bos}",
         color=0xF1C40F if mevcut < 10 else 0x2ECC71
     )
-
     if mevcut < 10:
         embed.set_footer(text=f"{10 - mevcut} antrenman daha kaldı!")
         await ctx.send(embed=embed)
     else:
         embed.set_footer(text="✅ Antrenman tamamlandı! +3M ekleniyor...")
         await ctx.send(embed=embed)
-
         try:
             uye = await ctx.guild.fetch_member(ctx.author.id)
         except Exception:
             uye = ctx.author
-
         guncel_isim = uye.nick if uye.nick else uye.name
         yeni_isim, eski_d, yeni_d = antrenman_deger_ekle(guncel_isim, 3)
         if yeni_isim is not None:
@@ -573,19 +551,16 @@ async def antrenman(ctx):
                 await ctx.send(embed=basari_embed(
                     f"💰 {uye.mention} antrenman ödülü aldı: **+3M**\n"
                     f"📊 Değer: `{eski_d}` → `{yeni_d}`\n"
-                    f"📝 Yeni isim: `{yeni_isim}`"
-                ))
+                    f"📝 Yeni isim: `{yeni_isim}`"))
             except (discord.Forbidden, discord.HTTPException):
                 await ctx.send(embed=basari_embed(
                     f"💰 {uye.mention} antrenman ödülü: **+3M** kazandı!\n"
                     f"📊 Değer: `{eski_d}` → `{yeni_d}`\n"
-                    f"⚠️ İsim otomatik güncellenemedi, lütfen manuel güncelle: `{yeni_isim}`"
-                ))
+                    f"⚠️ İsim güncellenemedi, manuel güncelle: `{yeni_isim}`"))
         else:
             await ctx.send(embed=hata_embed(
                 f"{uye.mention} 10/10 tamamladı fakat isim formatı hatalı!\n"
-                f"Format: `Ad | 1M | takım | SNT` olmalı."
-            ))
+                f"Format: `Ad | 1M | takım | SNT` olmalı."))
         antrenman_sayac[uye.id] = 0
 
 
@@ -595,34 +570,24 @@ async def antrenman(ctx):
 @bot.command(name="yardım")
 async def yardim(ctx):
     embed = discord.Embed(title="📋 Komut Listesi", color=0x5865F2)
-    embed.add_field(name="🔒 Kanal", inline=False, value=(
-        "`.lock` · `.lock #kanal` · `.unlock`"
-    ))
+    embed.add_field(name="🔒 Kanal", inline=False, value="`.lock` · `.lock #kanal` · `.unlock`")
     embed.add_field(name="🔨 Kullanıcı", inline=False, value=(
         "`.ban @u` · `.ban @u sebep` · `.unban isim`\n"
-        "`.mute @u` · `.mute @u 30` · `.mute @u 30 sebep` · `.unmute @u`"
-    ))
+        "`.mute @u` · `.mute @u 30` · `.mute @u 30 sebep` · `.unmute @u`"))
     embed.add_field(name="🗑️ Mesaj", inline=False, value="`.sil 10` — max 10000")
     embed.add_field(name="🎭 Rol", inline=False, value=(
         "`.rolver @u @rol` · `.rolal @u @rol`\n"
-        "`.toplurolver @rol` · `.toplurolal @rol`"
-    ))
+        "`.toplurolver @rol` · `.toplurolal @rol`"))
     embed.add_field(name="✏️ İsim / Değer", inline=False, value=(
         "`.isimdeğiştir @u yeniisim`\n"
-        "`.dver @u 3M` · `.dsil @u 2M` · `.dsil @u`"
-    ))
+        "`.dver @u 3M` · `.dsil @u 2M` · `.dsil @u`"))
     embed.add_field(name="📋 Kayıt", inline=False, value=(
         "`.k @u L.Messi | 1M | | SNT` — kayıt türü seçimi\n"
-        "`.kayıtsız @u` — üyeyi kayıtsıza al, tüm rolleri sil\n"
-        "`.kayıtsayı` — kayıt istatistikleri\n"
-        "⚠️ Bu komutlar yalnızca **Kayıt Yetkilisi** rolüyle kullanılabilir."
-    ))
-    embed.add_field(name="🏋️ Antrenman", inline=False, value=(
-        "`.antrenman` — 10/10 tamamlanınca +3M eklenir"
-    ))
-    embed.add_field(name="💤 AFK", inline=False, value=(
-        "`.afk` · `.afk sebep`"
-    ))
+        "`.kayıtsız @u` — kayıtsıza al\n"
+        "`.kayıtsayı` — istatistikler\n"
+        "⚠️ Yalnızca **Kayıt Yetkilisi** rolüyle kullanılabilir."))
+    embed.add_field(name="🏋️ Antrenman", inline=False, value="`.antrenman` — 10/10 tamamlanınca +3M")
+    embed.add_field(name="💤 AFK", inline=False, value="`.afk` · `.afk sebep`")
     embed.set_footer(text=f"Prefix: .  •  {bot.user.name}")
     await ctx.send(embed=embed)
 
