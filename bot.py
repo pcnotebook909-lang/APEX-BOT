@@ -14,11 +14,20 @@ bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 # ════════════════════════════════════════════════
 #  ⚙️  BURAYA KENDİ ID'LERİNİ YAZ
 # ════════════════════════════════════════════════
-LOG_KANAL_ID = 1479829702821548243   # Değer log kanalı
+LOG_KANAL_ID      = 1479829702821548243   # Log kanalı ID
+
+KAYIT_YETKI_ROL   = "Kayıt Yetkilisi"    # Kayıt yetkisi olan rolün adı
+KAYITLI_ROL       = "Kayıtlı"            # Kayıt sonrası verilecek rol
+KAYITSIZ_ROL      = "Kayıtsız"           # Kayıtsız komutuyla verilecek rol
+
+ROL_UYE           = "Üye"               # Kayıt seçenek rolleri
+ROL_FUTBOLCU      = "Futbolcu"
+ROL_TAKIM_BASKANI = "Takım Başkanı"
 # ════════════════════════════════════════════════
 
 afk_listesi     = {}
 antrenman_sayac = {}
+kayit_sayaci    = {}   # {kayit_yapan_id: sayi}
 
 # ─────────────────────────────────────────────
 def hata_embed(mesaj):
@@ -75,6 +84,11 @@ async def log_deger_gonder(guild, islem_yapan, hedef, eski_deger, yeni_deger, is
     embed.add_field(name="Yeni Değer",   value=f"`{yeni_deger}`", inline=True)
     embed.set_footer(text=f"Kullanıcı ID: {hedef.id}")
     await kanal.send(embed=embed)
+
+
+def kayit_yetkisi_var_mi(member: discord.Member) -> bool:
+    """Üyenin kayıt yetkisi rolü var mı kontrol et."""
+    return any(r.name == KAYIT_YETKI_ROL for r in member.roles)
 
 
 # ─────────────────────────────────────────────
@@ -304,6 +318,266 @@ async def dsil(ctx, uye: discord.Member, miktar: str = None):
 
 
 # ─────────────────────────────────────────────
+#  KAYIT KOMUTU (.k)
+# ─────────────────────────────────────────────
+@bot.command(name="k")
+async def kayit(ctx, uye: discord.Member, *, bilgi: str):
+    # Kayıt yetkisi kontrolü
+    if not kayit_yetkisi_var_mi(ctx.author):
+        return await ctx.send(embed=hata_embed("Bu komutu kullanmak için **Kayıt Yetkilisi** rolüne sahip olmalısın!"))
+
+    # Bilgiyi ayrıştır: "Aren 15" → isim=Aren, deger=15
+    parcalar = bilgi.strip().split()
+    if len(parcalar) < 1:
+        return await ctx.send(embed=hata_embed("Kullanım: `.k @üye İsim Değer`\nÖrnek: `.k @Kullanıcı Aren 15`"))
+
+    # Son parça sayı mı? → deger; geri kalanı isim
+    isim_parca = parcalar
+    deger_str  = None
+    if len(parcalar) >= 2 and parcalar[-1].isdigit():
+        deger_str  = parcalar[-1] + "M"
+        isim_parca = parcalar[:-1]
+
+    isim = " ".join(isim_parca)
+
+    # Embed oluştur
+    embed = discord.Embed(
+        title="📋 Kayıt Türü Seç",
+        description=(
+            f"**{uye.mention}** için kayıt türü seçin.\n"
+            f"👤 İsim: `{isim}`\n"
+            f"💰 Değer: `{deger_str if deger_str else 'Belirtilmedi'}`"
+        ),
+        color=0x5865F2
+    )
+    embed.set_footer(text="Aşağıdaki butonlardan birini seçin")
+
+    # Butonlar
+    view = KayitSecimView(
+        hedef     = uye,
+        isim      = isim,
+        deger_str = deger_str,
+        yapan     = ctx.author
+    )
+    await ctx.send(embed=embed, view=view)
+
+
+class KayitSecimView(discord.ui.View):
+    def __init__(self, hedef: discord.Member, isim: str, deger_str: str | None, yapan: discord.Member):
+        super().__init__(timeout=60)
+        self.hedef     = hedef
+        self.isim      = isim
+        self.deger_str = deger_str
+        self.yapan     = yapan
+        self.kullanildi = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.yapan.id:
+            await interaction.response.send_message(
+                embed=hata_embed("Bu butonları yalnızca komutu kullanan kişi kullanabilir!"),
+                ephemeral=True
+            )
+            return False
+        return True
+
+    async def kayit_yap(self, interaction: discord.Interaction, rol_adi: str):
+        if self.kullanildi:
+            await interaction.response.send_message(
+                embed=hata_embed("Bu kayıt zaten tamamlandı!"), ephemeral=True)
+            return
+        self.kullanildi = True
+
+        guild  = interaction.guild
+        hedef  = self.hedef
+        isim   = self.isim
+        deger  = self.deger_str
+
+        # Nick oluştur
+        if deger:
+            yeni_nick = f"{isim} | {deger}"
+        else:
+            yeni_nick = isim
+
+        # Seçilen rol
+        secilen_rol = discord.utils.get(guild.roles, name=rol_adi)
+        kayitli_rol = discord.utils.get(guild.roles, name=KAYITLI_ROL)
+
+        eksik_roller = []
+        if not secilen_rol:
+            eksik_roller.append(rol_adi)
+        if not kayitli_rol:
+            eksik_roller.append(KAYITLI_ROL)
+
+        if eksik_roller:
+            await interaction.response.edit_message(
+                embed=hata_embed(f"Sunucuda şu roller bulunamadı: `{'`, `'.join(eksik_roller)}`\nLütfen rolleri oluştur."),
+                view=None
+            )
+            return
+
+        # Nick değiştir
+        try:
+            await hedef.edit(nick=yeni_nick)
+        except (discord.Forbidden, discord.HTTPException):
+            pass  # Yetki yoksa devam et
+
+        # Rol ver
+        roller_verilecek = [secilen_rol, kayitli_rol]
+        await hedef.add_roles(*roller_verilecek, reason=f"Kayıt: {interaction.user}")
+
+        # Kayıt sayacını güncelle
+        kayit_sayaci[interaction.user.id] = kayit_sayaci.get(interaction.user.id, 0) + 1
+
+        # Başarı embed
+        sonuc_embed = discord.Embed(
+            title="✅ Kayıt Tamamlandı",
+            color=0x2ECC71,
+            timestamp=datetime.datetime.utcnow()
+        )
+        sonuc_embed.add_field(name="👤 Üye",       value=hedef.mention,    inline=True)
+        sonuc_embed.add_field(name="📝 Nick",       value=f"`{yeni_nick}`", inline=True)
+        sonuc_embed.add_field(name="🎭 Verilen Rol", value=f"`{rol_adi}` + `{KAYITLI_ROL}`", inline=False)
+        sonuc_embed.set_footer(text=f"Kaydeden: {interaction.user.display_name}")
+
+        await interaction.response.edit_message(embed=sonuc_embed, view=None)
+
+        # Log kanalına gönder
+        log_kanal = guild.get_channel(LOG_KANAL_ID)
+        if log_kanal:
+            log_embed = discord.Embed(
+                title="📋 Yeni Kayıt",
+                color=0x5865F2,
+                timestamp=datetime.datetime.utcnow()
+            )
+            log_embed.add_field(name="Üye",         value=hedef.mention,       inline=True)
+            log_embed.add_field(name="Nick",         value=f"`{yeni_nick}`",    inline=True)
+            log_embed.add_field(name="Rol",          value=f"`{rol_adi}`",      inline=True)
+            log_embed.add_field(name="Kaydeden",     value=interaction.user.mention, inline=True)
+            log_embed.set_footer(text=f"Üye ID: {hedef.id}")
+            await log_kanal.send(embed=log_embed)
+
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="Üye", style=discord.ButtonStyle.primary, emoji="👤")
+    async def uye_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.kayit_yap(interaction, ROL_UYE)
+
+    @discord.ui.button(label="Futbolcu", style=discord.ButtonStyle.success, emoji="⚽")
+    async def futbolcu_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.kayit_yap(interaction, ROL_FUTBOLCU)
+
+    @discord.ui.button(label="Takım Başkanı", style=discord.ButtonStyle.danger, emoji="👑")
+    async def takim_baskani_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.kayit_yap(interaction, ROL_TAKIM_BASKANI)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+# ─────────────────────────────────────────────
+#  KAYITSIZ KOMUTU
+# ─────────────────────────────────────────────
+@bot.command(name="kayıtsız")
+async def kayitsiz(ctx, uye: discord.Member):
+    # Kayıt yetkisi kontrolü
+    if not kayit_yetkisi_var_mi(ctx.author):
+        return await ctx.send(embed=hata_embed("Bu komutu kullanmak için **Kayıt Yetkilisi** rolüne sahip olmalısın!"))
+
+    guild = ctx.guild
+
+    # Kayıtsız rolünü bul
+    kayitsiz_rol = discord.utils.get(guild.roles, name=KAYITSIZ_ROL)
+    if not kayitsiz_rol:
+        return await ctx.send(embed=hata_embed(f"`{KAYITSIZ_ROL}` rolü sunucuda bulunamadı!"))
+
+    # Üyenin tüm rollerini al (bot ve @everyone hariç)
+    alinacak_roller = [
+        r for r in uye.roles
+        if r != guild.default_role and not r.managed
+        and r < guild.me.top_role
+    ]
+
+    # Rolleri sil
+    if alinacak_roller:
+        await uye.remove_roles(*alinacak_roller, reason=f"Kayıtsız: {ctx.author}")
+
+    # Kayıtsız rolü ver
+    await uye.add_roles(kayitsiz_rol, reason=f"Kayıtsız komutu: {ctx.author}")
+
+    # Nick'i kendi kullanıcı adına çevir (nick'i sıfırla)
+    try:
+        await uye.edit(nick=uye.name, reason="Kayıtsız komutu - nick sıfırlandı")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+    embed = discord.Embed(
+        title="🚫 Kayıtsız",
+        description=(
+            f"{uye.mention} kullanıcısı kayıtsıza alındı.\n"
+            f"🗑️ **{len(alinacak_roller)}** rol silindi.\n"
+            f"🏷️ `{KAYITSIZ_ROL}` rolü verildi.\n"
+            f"📝 Nick kullanıcı adına sıfırlandı."
+        ),
+        color=0xFF4C4C,
+        timestamp=datetime.datetime.utcnow()
+    )
+    embed.set_footer(text=f"İşlemi yapan: {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+    # Log
+    log_kanal = guild.get_channel(LOG_KANAL_ID)
+    if log_kanal:
+        log_embed = discord.Embed(
+            title="🚫 Kayıtsız",
+            color=0xFF4C4C,
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.add_field(name="Üye",          value=uye.mention,        inline=True)
+        log_embed.add_field(name="İşlemi Yapan", value=ctx.author.mention,  inline=True)
+        log_embed.add_field(name="Silinen Rol Sayısı", value=str(len(alinacak_roller)), inline=True)
+        log_embed.set_footer(text=f"Üye ID: {uye.id}")
+        await log_kanal.send(embed=log_embed)
+
+
+# ─────────────────────────────────────────────
+#  KAYIT SAYISI KOMUTU (.kayıtsayı)
+# ─────────────────────────────────────────────
+@bot.command(name="kayıtsayı")
+async def kayit_say(ctx):
+    # Kayıt yetkisi kontrolü
+    if not kayit_yetkisi_var_mi(ctx.author):
+        return await ctx.send(embed=hata_embed("Bu komutu kullanmak için **Kayıt Yetkilisi** rolüne sahip olmalısın!"))
+
+    if not kayit_sayaci:
+        return await ctx.send(embed=discord.Embed(
+            description="📋 Henüz hiç kayıt yapılmamış.",
+            color=0xFFA500
+        ))
+
+    # Sırala
+    siralama = sorted(kayit_sayaci.items(), key=lambda x: x[1], reverse=True)
+
+    embed = discord.Embed(
+        title="📊 Kayıt İstatistikleri",
+        color=0x5865F2,
+        timestamp=datetime.datetime.utcnow()
+    )
+
+    sirali_metin = ""
+    for sira, (uye_id, sayi) in enumerate(siralama, 1):
+        uye = ctx.guild.get_member(uye_id)
+        isim = uye.display_name if uye else f"Bilinmeyen ({uye_id})"
+        madalya = "🥇" if sira == 1 else "🥈" if sira == 2 else "🥉" if sira == 3 else f"**{sira}.**"
+        sirali_metin += f"{madalya} {isim} — `{sayi}` kayıt\n"
+
+    embed.description = sirali_metin or "Kayıt bulunamadı."
+    embed.set_footer(text=f"Toplam kayıt yapan: {len(siralama)} kişi")
+    await ctx.send(embed=embed)
+
+
+# ─────────────────────────────────────────────
 #  AFK KOMUTU
 # ─────────────────────────────────────────────
 @bot.command(name="afk")
@@ -341,7 +615,6 @@ async def antrenman(ctx):
         embed.set_footer(text="✅ Antrenman tamamlandı! +3M ekleniyor...")
         await ctx.send(embed=embed)
 
-        # Cache'deki köhne datanı deyil, API'den taze datanı çek
         try:
             uye = await ctx.guild.fetch_member(ctx.author.id)
         except Exception:
@@ -393,6 +666,12 @@ async def yardim(ctx):
         "`.isimdeğiştir @u yeniisim`\n"
         "`.dver @u 3M` · `.dsil @u 2M` · `.dsil @u`"
     ))
+    embed.add_field(name="📋 Kayıt", inline=False, value=(
+        "`.k @u İsim Değer` — kayıt türü seçimi (Üye / Futbolcu / Takım Başkanı)\n"
+        "`.kayıtsız @u` — üyeyi kayıtsıza al, tüm rolleri sil\n"
+        "`.kayıtsayı` — kayıt istatistikleri\n"
+        "⚠️ Bu komutlar yalnızca **Kayıt Yetkilisi** rolüyle kullanılabilir."
+    ))
     embed.add_field(name="🏋️ Antrenman", inline=False, value=(
         "`.antrenman` — 10/10 tamamlanınca +3M eklenir"
     ))
@@ -428,7 +707,7 @@ async def on_command_error(ctx, error):
         pass
 
 
-TOKEN = os.environ.get("TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 if __name__ == "__main__":
     bot.run(TOKEN)
