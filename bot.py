@@ -1,0 +1,434 @@
+import discord
+from discord.ext import commands
+import asyncio
+import re
+import datetime
+import os
+
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
+
+# ════════════════════════════════════════════════
+#  ⚙️  BURAYA KENDİ ID'LERİNİ YAZ
+# ════════════════════════════════════════════════
+LOG_KANAL_ID = 1479829702821548243   # Değer log kanalı
+# ════════════════════════════════════════════════
+
+afk_listesi     = {}
+antrenman_sayac = {}
+
+# ─────────────────────────────────────────────
+def hata_embed(mesaj):
+    return discord.Embed(description=f"❌ {mesaj}", color=0xFF4C4C)
+
+def basari_embed(mesaj):
+    return discord.Embed(description=f"✅ {mesaj}", color=0x2ECC71)
+
+
+def deger_isle(isim, miktar_str, islem):
+    parcalar = [p.strip() for p in isim.split("|")]
+    if len(parcalar) < 2:
+        return None, "İsim formatı hatalı! Format: `Ad | 1M | ...`"
+    mevcut_str = parcalar[1].strip()
+    eslesme = re.match(r"^(\d+(?:\.\d+)?)M$", mevcut_str, re.IGNORECASE)
+    if not eslesme:
+        return None, f"Mevcut değer `{mevcut_str}` geçerli formatta değil!"
+    mevcut = float(eslesme.group(1))
+    miktar_eslesme = re.match(r"^(\d+(?:\.\d+)?)M$", miktar_str, re.IGNORECASE)
+    if not miktar_eslesme:
+        return None, f"`{miktar_str}` geçerli bir değer değil! (örnek: `2M`)"
+    miktar = float(miktar_eslesme.group(1))
+    yeni = mevcut + miktar if islem == "ekle" else max(0.0, mevcut - miktar)
+    yeni_str = f"{int(yeni)}M" if yeni == int(yeni) else f"{yeni}M"
+    parcalar[1] = f" {yeni_str} "
+    return "|".join(parcalar), f"`{mevcut_str}` → `{yeni_str}`"
+
+
+def antrenman_deger_ekle(isim, eklenecek: float):
+    parcalar = [p.strip() for p in isim.split("|")]
+    if len(parcalar) < 2:
+        return None, "İsim formatı hatalı! Format: `Ad | 1M | ...`", None
+    mevcut_str = parcalar[1].strip()
+    eslesme = re.match(r"^(\d+(?:\.\d+)?)M$", mevcut_str, re.IGNORECASE)
+    if not eslesme:
+        return None, f"Değer `{mevcut_str}` formatı hatalı!", None
+    mevcut = float(eslesme.group(1))
+    yeni = mevcut + eklenecek
+    yeni_str = f"{int(yeni)}M" if yeni == int(yeni) else f"{yeni}M"
+    parcalar[1] = f" {yeni_str} "
+    return "|".join(parcalar), mevcut_str, yeni_str
+
+
+async def log_deger_gonder(guild, islem_yapan, hedef, eski_deger, yeni_deger, islem_turu):
+    kanal = guild.get_channel(LOG_KANAL_ID)
+    if not kanal:
+        return
+    embed = discord.Embed(title="📊 Değer Güncellendi", color=0x5865F2,
+                          timestamp=datetime.datetime.utcnow())
+    embed.add_field(name="İşlem",        value=islem_turu, inline=True)
+    embed.add_field(name="Hedef",        value=hedef.mention, inline=True)
+    embed.add_field(name="İşlemi Yapan", value=getattr(islem_yapan, 'mention', str(islem_yapan)), inline=True)
+    embed.add_field(name="Eski Değer",   value=f"`{eski_deger}`", inline=True)
+    embed.add_field(name="Yeni Değer",   value=f"`{yeni_deger}`", inline=True)
+    embed.set_footer(text=f"Kullanıcı ID: {hedef.id}")
+    await kanal.send(embed=embed)
+
+
+# ─────────────────────────────────────────────
+#  EVENTS
+# ─────────────────────────────────────────────
+@bot.event
+async def on_ready():
+    print(f"✅ {bot.user} olarak giriş yapıldı!")
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching,
+        name=".yardım | Moderasyon Botu"
+    ))
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    if message.author.id in afk_listesi:
+        sebep, zaman = afk_listesi.pop(message.author.id)
+        gecen = datetime.datetime.utcnow() - zaman
+        dakika = int(gecen.total_seconds() // 60)
+        await message.channel.send(embed=discord.Embed(
+            description=f"👋 **{message.author.display_name}**, AFK modundan çıktın! ({dakika} dakika AFK'daydın)",
+            color=0x5865F2), delete_after=5)
+    for mention in message.mentions:
+        if mention.id in afk_listesi:
+            sebep, zaman = afk_listesi[mention.id]
+            gecen = datetime.datetime.utcnow() - zaman
+            dakika = int(gecen.total_seconds() // 60)
+            await message.channel.send(embed=discord.Embed(
+                description=f"💤 **{mention.display_name}** şu an AFK! Sebep: {sebep} ({dakika} dakikadır AFK)",
+                color=0xFFA500), delete_after=8)
+    await bot.process_commands(message)
+
+
+# ─────────────────────────────────────────────
+#  KANAL KOMUTLARI
+# ─────────────────────────────────────────────
+@bot.command(name="lock")
+@commands.has_permissions(manage_channels=True)
+async def lock(ctx, kanal: discord.TextChannel = None):
+    kanal = kanal or ctx.channel
+    await kanal.set_permissions(ctx.guild.default_role, send_messages=False)
+    await ctx.send(embed=basari_embed(f"🔒 {kanal.mention} kanalı kilitlendi."))
+
+@bot.command(name="unlock")
+@commands.has_permissions(manage_channels=True)
+async def unlock(ctx, kanal: discord.TextChannel = None):
+    kanal = kanal or ctx.channel
+    await kanal.set_permissions(ctx.guild.default_role, send_messages=True)
+    await ctx.send(embed=basari_embed(f"🔓 {kanal.mention} kanalının kilidi açıldı."))
+
+
+# ─────────────────────────────────────────────
+#  KULLANICI KOMUTLARI
+# ─────────────────────────────────────────────
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+async def ban(ctx, uye: discord.Member, *, sebep: str = "Sebep belirtilmedi"):
+    if uye == ctx.author:
+        return await ctx.send(embed=hata_embed("Kendinizi ban yapamazsınız!"))
+    if uye.top_role >= ctx.author.top_role:
+        return await ctx.send(embed=hata_embed("Bu kullanıcıyı ban yapamazsınız!"))
+    await uye.ban(reason=sebep)
+    await ctx.send(embed=basari_embed(f"**{uye}** banlandı.\n📋 Sebep: {sebep}"))
+
+@bot.command(name="unban")
+@commands.has_permissions(ban_members=True)
+async def unban(ctx, *, kullanici: str):
+    bans = [entry async for entry in ctx.guild.bans()]
+    for entry in bans:
+        user = entry.user
+        if str(user) == kullanici or user.name == kullanici:
+            await ctx.guild.unban(user)
+            return await ctx.send(embed=basari_embed(f"**{user}** kullanıcısının banı kaldırıldı."))
+    await ctx.send(embed=hata_embed(f"`{kullanici}` adlı banlı kullanıcı bulunamadı."))
+
+@bot.command(name="mute")
+@commands.has_permissions(moderate_members=True)
+async def mute(ctx, uye: discord.Member, *, arguman: str = "10"):
+    parcalar = arguman.split(" ", 1)
+    try:
+        sure = int(parcalar[0])
+        sebep = parcalar[1] if len(parcalar) > 1 else "Sebep belirtilmedi"
+    except ValueError:
+        sure = 10
+        sebep = arguman
+    if uye == ctx.author:
+        return await ctx.send(embed=hata_embed("Kendinizi susturmak için bu komutu kullanamazsınız!"))
+    if uye.top_role >= ctx.author.top_role:
+        return await ctx.send(embed=hata_embed("Bu kullanıcıyı susturma yetkiniz yok!"))
+    if sure < 1 or sure > 40320:
+        return await ctx.send(embed=hata_embed("Süre 1 ile 40320 dakika arasında olmalıdır!"))
+    bitis = discord.utils.utcnow() + datetime.timedelta(minutes=sure)
+    await uye.timeout(bitis, reason=sebep)
+    await ctx.send(embed=basari_embed(f"🔇 **{uye.mention}** {sure} dakika susturuldu.\n📋 Sebep: {sebep}"))
+
+@bot.command(name="unmute")
+@commands.has_permissions(moderate_members=True)
+async def unmute(ctx, uye: discord.Member):
+    await uye.timeout(None)
+    await ctx.send(embed=basari_embed(f"🔊 **{uye.mention}** kullanıcısının susturması kaldırıldı."))
+
+@bot.command(name="sil")
+@commands.has_permissions(manage_messages=True)
+async def sil(ctx, adet: int):
+    if adet < 1 or adet > 10000:
+        return await ctx.send(embed=hata_embed("1 ile 100 arasında bir sayı giriniz!"))
+    await ctx.message.delete()
+    silinen = await ctx.channel.purge(limit=adet)
+    msg = await ctx.send(embed=basari_embed(f"🗑️ {len(silinen)} mesaj silindi."))
+    await asyncio.sleep(3)
+    await msg.delete()
+
+
+# ─────────────────────────────────────────────
+#  ROL KOMUTLARI
+# ─────────────────────────────────────────────
+@bot.command(name="rolver")
+@commands.has_permissions(manage_roles=True)
+async def rolver(ctx, uye: discord.Member, rol: discord.Role):
+    if rol >= ctx.guild.me.top_role:
+        return await ctx.send(embed=hata_embed("Bu rolü veremem, rolüm bu rolden aşağıda!"))
+    if rol in uye.roles:
+        return await ctx.send(embed=hata_embed(f"**{uye.display_name}** zaten bu role sahip!"))
+    await uye.add_roles(rol)
+    await ctx.send(embed=basari_embed(f"**{uye.mention}** kullanıcısına **{rol.name}** rolü verildi."))
+
+@bot.command(name="rolal")
+@commands.has_permissions(manage_roles=True)
+async def rolal(ctx, uye: discord.Member, rol: discord.Role):
+    if rol >= ctx.guild.me.top_role:
+        return await ctx.send(embed=hata_embed("Bu rolü alamam, rolüm bu rolden aşağıda!"))
+    if rol not in uye.roles:
+        return await ctx.send(embed=hata_embed(f"**{uye.display_name}** bu role sahip değil!"))
+    await uye.remove_roles(rol)
+    await ctx.send(embed=basari_embed(f"**{uye.mention}** kullanıcısından **{rol.name}** rolü alındı."))
+
+@bot.command(name="toplurolver")
+@commands.has_permissions(manage_roles=True)
+async def toplu_rolver(ctx, rol: discord.Role):
+    if rol >= ctx.guild.me.top_role:
+        return await ctx.send(embed=hata_embed("Bu rolü veremem, rolüm bu rolden aşağıda!"))
+    msg = await ctx.send(embed=discord.Embed(
+        description=f"⏳ Tüm üyelere **{rol.name}** rolü veriliyor...", color=0xFFA500))
+    sayac = 0
+    for uye in ctx.guild.members:
+        if rol not in uye.roles and not uye.bot:
+            try:
+                await uye.add_roles(rol)
+                sayac += 1
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+    await msg.edit(embed=basari_embed(f"✅ **{sayac}** üyeye **{rol.name}** rolü verildi."))
+
+@bot.command(name="toplurolal")
+@commands.has_permissions(manage_roles=True)
+async def toplu_rolal(ctx, rol: discord.Role):
+    if rol >= ctx.guild.me.top_role:
+        return await ctx.send(embed=hata_embed("Bu rolü alamam, rolüm bu rolden aşağıda!"))
+    msg = await ctx.send(embed=discord.Embed(
+        description=f"⏳ Tüm üyelerden **{rol.name}** rolü alınıyor...", color=0xFFA500))
+    sayac = 0
+    for uye in ctx.guild.members:
+        if rol in uye.roles and not uye.bot:
+            try:
+                await uye.remove_roles(rol)
+                sayac += 1
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+    await msg.edit(embed=basari_embed(f"✅ **{sayac}** üyeden **{rol.name}** rolü alındı."))
+
+
+# ─────────────────────────────────────────────
+#  İSİM / DEĞER KOMUTLARI
+# ─────────────────────────────────────────────
+@bot.command(name="isimdeğiştir")
+@commands.has_permissions(manage_nicknames=True)
+async def isim_degistir(ctx, uye: discord.Member, *, yeni_isim: str):
+    eski_isim = uye.display_name
+    await uye.edit(nick=yeni_isim)
+    await ctx.send(embed=basari_embed(f"**{eski_isim}** → **{yeni_isim}** olarak değiştirildi."))
+
+@bot.command(name="dver")
+@commands.has_permissions(manage_nicknames=True)
+async def dver(ctx, uye: discord.Member, miktar: str):
+    eski_isim = uye.display_name
+    parcalar = [p.strip() for p in eski_isim.split("|")]
+    eski_deger = parcalar[1].strip() if len(parcalar) >= 2 else "?"
+    yeni_isim, sonuc = deger_isle(eski_isim, miktar, "ekle")
+    if yeni_isim is None:
+        return await ctx.send(embed=hata_embed(sonuc))
+    await uye.edit(nick=yeni_isim)
+    yeni_parcalar = [p.strip() for p in yeni_isim.split("|")]
+    yeni_deger = yeni_parcalar[1].strip() if len(yeni_parcalar) >= 2 else "?"
+    await ctx.send(embed=basari_embed(
+        f"**{uye.mention}** değeri güncellendi: {sonuc}\n📝 Yeni isim: `{yeni_isim}`"))
+    await log_deger_gonder(ctx.guild, ctx.author, uye, eski_deger, yeni_deger, "➕ Değer Eklendi")
+
+@bot.command(name="dsil")
+@commands.has_permissions(manage_nicknames=True)
+async def dsil(ctx, uye: discord.Member, miktar: str = None):
+    mevcut_isim = uye.display_name
+    parcalar = [p.strip() for p in mevcut_isim.split("|")]
+    if len(parcalar) < 2:
+        return await ctx.send(embed=hata_embed("İsim formatı hatalı! Format: `Ad | 1M | ...`"))
+    eski_deger = parcalar[1].strip()
+    if miktar is None:
+        parcalar[1] = " 0M "
+        yeni_isim = "|".join(parcalar)
+        await uye.edit(nick=yeni_isim)
+        await ctx.send(embed=basari_embed(
+            f"**{uye.mention}** değeri sıfırlandı: `{eski_deger}` → `0M`\n📝 Yeni isim: `{yeni_isim}`"))
+        await log_deger_gonder(ctx.guild, ctx.author, uye, eski_deger, "0M", "🔄 Değer Sıfırlandı")
+        return
+    yeni_isim, sonuc = deger_isle(mevcut_isim, miktar, "çıkar")
+    if yeni_isim is None:
+        return await ctx.send(embed=hata_embed(sonuc))
+    await uye.edit(nick=yeni_isim)
+    yeni_parcalar = [p.strip() for p in yeni_isim.split("|")]
+    yeni_deger = yeni_parcalar[1].strip() if len(yeni_parcalar) >= 2 else "?"
+    await ctx.send(embed=basari_embed(
+        f"**{uye.mention}** değeri güncellendi: {sonuc}\n📝 Yeni isim: `{yeni_isim}`"))
+    await log_deger_gonder(ctx.guild, ctx.author, uye, eski_deger, yeni_deger, "➖ Değer Çıkarıldı")
+
+
+# ─────────────────────────────────────────────
+#  AFK KOMUTU
+# ─────────────────────────────────────────────
+@bot.command(name="afk")
+async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
+    afk_listesi[ctx.author.id] = (sebep, datetime.datetime.utcnow())
+    await ctx.send(embed=discord.Embed(
+        description=f"💤 **{ctx.author.display_name}** AFK moduna geçti.\n📋 Sebep: {sebep}",
+        color=0xFFA500))
+
+
+# ─────────────────────────────────────────────
+#  ANTRENMAN KOMUTU
+# ─────────────────────────────────────────────
+@bot.command(name="antrenman")
+async def antrenman(ctx):
+    uye = ctx.author
+    mevcut = antrenman_sayac.get(uye.id, 0) + 1
+    if mevcut > 10:
+        mevcut = 1
+    antrenman_sayac[uye.id] = mevcut
+
+    dolu = "🟩" * mevcut
+    bos  = "⬜" * (10 - mevcut)
+
+    embed = discord.Embed(
+        title="🏋️ Antrenman",
+        description=f"{uye.mention} antrenman yapıyor!\n\n**{mevcut}/10**\n{dolu}{bos}",
+        color=0xF1C40F if mevcut < 10 else 0x2ECC71
+    )
+
+    if mevcut < 10:
+        embed.set_footer(text=f"{10 - mevcut} antrenman daha kaldı!")
+        await ctx.send(embed=embed)
+    else:
+        embed.set_footer(text="✅ Antrenman tamamlandı! +3M ekleniyor...")
+        await ctx.send(embed=embed)
+
+        # Cache'deki köhne datanı deyil, API'den taze datanı çek
+        try:
+            uye = await ctx.guild.fetch_member(ctx.author.id)
+        except Exception:
+            uye = ctx.author
+
+        guncel_isim = uye.nick if uye.nick else uye.name
+        yeni_isim, eski_d, yeni_d = antrenman_deger_ekle(guncel_isim, 3)
+        if yeni_isim is not None:
+            try:
+                await uye.edit(nick=yeni_isim)
+                await ctx.send(embed=basari_embed(
+                    f"💰 {uye.mention} antrenman ödülü aldı: **+3M**\n"
+                    f"📊 Değer: `{eski_d}` → `{yeni_d}`\n"
+                    f"📝 Yeni isim: `{yeni_isim}`"
+                ))
+            except (discord.Forbidden, discord.HTTPException):
+                await ctx.send(embed=basari_embed(
+                    f"💰 {uye.mention} antrenman ödülü: **+3M** kazandı!\n"
+                    f"📊 Değer: `{eski_d}` → `{yeni_d}`\n"
+                    f"⚠️ İsim otomatik güncellenemedi, lütfen manuel güncelle: `{yeni_isim}`"
+                ))
+        else:
+            await ctx.send(embed=hata_embed(
+                f"{uye.mention} 10/10 tamamladı fakat isim formatı hatalı!\n"
+                f"Format: `Ad | 1M | takım | SNT` olmalı."
+            ))
+        antrenman_sayac[uye.id] = 0
+
+
+# ─────────────────────────────────────────────
+#  YARDIM KOMUTU
+# ─────────────────────────────────────────────
+@bot.command(name="yardım")
+async def yardim(ctx):
+    embed = discord.Embed(title="📋 Komut Listesi", color=0x5865F2)
+    embed.add_field(name="🔒 Kanal", inline=False, value=(
+        "`.lock` · `.lock #kanal` · `.unlock`"
+    ))
+    embed.add_field(name="🔨 Kullanıcı", inline=False, value=(
+        "`.ban @u` · `.ban @u sebep` · `.unban isim`\n"
+        "`.mute @u` · `.mute @u 30` · `.mute @u 30 sebep` · `.unmute @u`"
+    ))
+    embed.add_field(name="🗑️ Mesaj", inline=False, value="`.sil 10` — max 10000")
+    embed.add_field(name="🎭 Rol", inline=False, value=(
+        "`.rolver @u @rol` · `.rolal @u @rol`\n"
+        "`.toplurolver @rol` · `.toplurolal @rol`"
+    ))
+    embed.add_field(name="✏️ İsim / Değer", inline=False, value=(
+        "`.isimdeğiştir @u yeniisim`\n"
+        "`.dver @u 3M` · `.dsil @u 2M` · `.dsil @u`"
+    ))
+    embed.add_field(name="🏋️ Antrenman", inline=False, value=(
+        "`.antrenman` — 10/10 tamamlanınca +3M eklenir"
+    ))
+    embed.add_field(name="💤 AFK", inline=False, value=(
+        "`.afk` · `.afk sebep`"
+    ))
+    embed.set_footer(text=f"Prefix: .  •  {bot.user.name}")
+    await ctx.send(embed=embed)
+
+
+# ─────────────────────────────────────────────
+#  HATA YÖNETİMİ
+# ─────────────────────────────────────────────
+@bot.event
+async def on_command_error(ctx, error):
+    if hasattr(ctx.command, 'on_error'):
+        return
+    if isinstance(error, commands.CommandInvokeError):
+        error = error.original
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send(embed=hata_embed("Bu komutu kullanmak için yetkiniz yok!"))
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send(embed=hata_embed("Kullanıcı bulunamadı!"))
+    elif isinstance(error, commands.RoleNotFound):
+        await ctx.send(embed=hata_embed("Rol bulunamadı!"))
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send(embed=hata_embed("Geçersiz argüman!"))
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(embed=hata_embed(f"Eksik argüman: `{error.param.name}`"))
+    elif isinstance(error, commands.CommandNotFound):
+        pass
+    else:
+        pass
+
+
+TOKEN = os.environ.get("TOKEN")
+
+if __name__ == "__main__":
+    bot.run(TOKEN)
