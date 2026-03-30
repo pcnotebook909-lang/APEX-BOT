@@ -14,7 +14,7 @@ bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 # ════════════════════════════════════════════════
 #  ⚙️  BURAYA KENDİ ID'LERİNİ YAZ
 # ════════════════════════════════════════════════
-LOG_KANAL_ID      = 1479829702821548243
+LOG_KANAL_ID      = 1488165317644386304
 
 KAYIT_YETKI_ROL   = "Kayıt Yetkilisi"
 KAYITLI_ROL       = "Kayıtlı"
