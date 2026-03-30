@@ -38,7 +38,14 @@ def basari_embed(mesaj):
 
 
 def deger_isle(isim, miktar_str, islem):
-    parcalar = [p.strip() for p in isim.split("|")]
+    # Orijinal ayırıcı formatını koru (" | " varsa onu kullan)
+    if " | " in isim:
+        ayirici = " | "
+        parcalar = isim.split(" | ")
+    else:
+        ayirici = " | "
+        parcalar = [p.strip() for p in isim.split("|")]
+
     if len(parcalar) < 2:
         return None, "İsim formatı hatalı! Format: `Ad | 1M | ...`"
     mevcut_str = parcalar[1].strip()
@@ -52,12 +59,18 @@ def deger_isle(isim, miktar_str, islem):
     miktar = float(miktar_eslesme.group(1))
     yeni = mevcut + miktar if islem == "ekle" else max(0.0, mevcut - miktar)
     yeni_str = f"{int(yeni)}M" if yeni == int(yeni) else f"{yeni}M"
-    parcalar[1] = f" {yeni_str} "
-    return "|".join(parcalar), f"`{mevcut_str}` → `{yeni_str}`"
+    parcalar[1] = yeni_str
+    return ayirici.join(parcalar), f"`{mevcut_str}` → `{yeni_str}`"
 
 
 def antrenman_deger_ekle(isim, eklenecek: float):
-    parcalar = [p.strip() for p in isim.split("|")]
+    if " | " in isim:
+        ayirici = " | "
+        parcalar = isim.split(" | ")
+    else:
+        ayirici = " | "
+        parcalar = [p.strip() for p in isim.split("|")]
+
     if len(parcalar) < 2:
         return None, "İsim formatı hatalı!", None
     mevcut_str = parcalar[1].strip()
@@ -67,8 +80,8 @@ def antrenman_deger_ekle(isim, eklenecek: float):
     mevcut = float(eslesme.group(1))
     yeni = mevcut + eklenecek
     yeni_str = f"{int(yeni)}M" if yeni == int(yeni) else f"{yeni}M"
-    parcalar[1] = f" {yeni_str} "
-    return "|".join(parcalar), mevcut_str, yeni_str
+    parcalar[1] = yeni_str
+    return ayirici.join(parcalar), mevcut_str, yeni_str
 
 
 async def log_deger_gonder(guild, islem_yapan, hedef, eski_deger, yeni_deger, islem_turu):
@@ -226,9 +239,14 @@ async def rolal(ctx, uye: discord.Member, rol: discord.Role):
     await uye.remove_roles(rol)
     await ctx.send(embed=basari_embed(f"**{uye.mention}** kullanıcısından **{rol.name}** rolü alındı."))
 
+# FIX: toplurolver artık rol adını * ile alıyor (boşluklu adlar için)
 @bot.command(name="toplurolver")
 @commands.has_permissions(manage_roles=True)
-async def toplu_rolver(ctx, rol: discord.Role):
+async def toplu_rolver(ctx, *, rol_adi: str):
+    rol = discord.utils.get(ctx.guild.roles, name=rol_adi.strip())
+    if not rol:
+        return await ctx.send(embed=hata_embed(
+            f"`{rol_adi}` adlı rol bulunamadı! Rol adını tam ve büyük/küçük harfe dikkat ederek yaz."))
     if rol >= ctx.guild.me.top_role:
         return await ctx.send(embed=hata_embed("Bu rolü veremem, rolüm bu rolden aşağıda!"))
     msg = await ctx.send(embed=discord.Embed(
@@ -244,9 +262,14 @@ async def toplu_rolver(ctx, rol: discord.Role):
                 pass
     await msg.edit(embed=basari_embed(f"✅ **{sayac}** üyeye **{rol.name}** rolü verildi."))
 
+# FIX: toplurolal da aynı şekilde * ile alıyor
 @bot.command(name="toplurolal")
 @commands.has_permissions(manage_roles=True)
-async def toplu_rolal(ctx, rol: discord.Role):
+async def toplu_rolal(ctx, *, rol_adi: str):
+    rol = discord.utils.get(ctx.guild.roles, name=rol_adi.strip())
+    if not rol:
+        return await ctx.send(embed=hata_embed(
+            f"`{rol_adi}` adlı rol bulunamadı! Rol adını tam ve büyük/küçük harfe dikkat ederek yaz."))
     if rol >= ctx.guild.me.top_role:
         return await ctx.send(embed=hata_embed("Bu rolü alamam, rolüm bu rolden aşağıda!"))
     msg = await ctx.send(embed=discord.Embed(
@@ -293,13 +316,17 @@ async def dver(ctx, uye: discord.Member, miktar: str):
 @commands.has_permissions(manage_nicknames=True)
 async def dsil(ctx, uye: discord.Member, miktar: str = None):
     mevcut_isim = uye.display_name
-    parcalar = [p.strip() for p in mevcut_isim.split("|")]
+    if " | " in mevcut_isim:
+        parcalar = mevcut_isim.split(" | ")
+    else:
+        parcalar = [p.strip() for p in mevcut_isim.split("|")]
+
     if len(parcalar) < 2:
         return await ctx.send(embed=hata_embed("İsim formatı hatalı! Format: `Ad | 1M | ...`"))
     eski_deger = parcalar[1].strip()
     if miktar is None:
-        parcalar[1] = " 0M "
-        yeni_isim = "|".join(parcalar)
+        parcalar[1] = "0M"
+        yeni_isim = " | ".join(parcalar)
         await uye.edit(nick=yeni_isim)
         await ctx.send(embed=basari_embed(
             f"**{uye.mention}** değeri sıfırlandı: `{eski_deger}` → `0M`\n📝 Yeni isim: `{yeni_isim}`"))
@@ -381,14 +408,12 @@ class KayitSecimView(discord.ui.View):
                 view=None)
             return
 
-        # 1. Kayıtsız rolünü sil
         if kayitsiz_rol and kayitsiz_rol in hedef.roles:
             try:
                 await hedef.remove_roles(kayitsiz_rol, reason=f"Kayıt: {interaction.user}")
             except Exception:
                 pass
 
-        # 2. Kayıtlı + seçilen rolü ver
         try:
             await hedef.add_roles(secilen_rol, kayitli_rol, reason=f"Kayıt: {interaction.user}")
         except Exception as e:
@@ -396,7 +421,6 @@ class KayitSecimView(discord.ui.View):
                 embed=hata_embed(f"Rol verilemedi: {e}"), view=None)
             return
 
-        # 3. Nicki değiştir
         nick_hata = None
         try:
             await hedef.edit(nick=yeni_nick)
@@ -405,10 +429,8 @@ class KayitSecimView(discord.ui.View):
         except discord.HTTPException as e:
             nick_hata = f"⚠️ Nick değiştirilemedi: {e}"
 
-        # 4. Sayacı güncelle
         kayit_sayaci[interaction.user.id] = kayit_sayaci.get(interaction.user.id, 0) + 1
 
-        # 5. Sonuç embed
         renk = 0x2ECC71 if not nick_hata else 0xFFA500
         sonuc = discord.Embed(title="✅ Kayıt Tamamlandı", color=renk,
                               timestamp=datetime.datetime.utcnow())
@@ -577,7 +599,7 @@ async def yardim(ctx):
     embed.add_field(name="🗑️ Mesaj", inline=False, value="`.sil 10` — max 10000")
     embed.add_field(name="🎭 Rol", inline=False, value=(
         "`.rolver @u @rol` · `.rolal @u @rol`\n"
-        "`.toplurolver @rol` · `.toplurolal @rol`"))
+        "`.toplurolver Rol Adı` · `.toplurolal Rol Adı`"))
     embed.add_field(name="✏️ İsim / Değer", inline=False, value=(
         "`.isimdeğiştir @u yeniisim`\n"
         "`.dver @u 3M` · `.dsil @u 2M` · `.dsil @u`"))
